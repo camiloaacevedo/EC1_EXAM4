@@ -1,0 +1,20 @@
+# Carpetas de compilación (Basura de Quartus)
+db/
+incremental_db/
+output_files/
+greybox_tmp/
+hc_output/
+hps_isw_software/
+simulation/
+
+# Archivos de reporte y temporales
+*.rpt
+*.summary
+*.done
+*.jdi
+*.pin
+*.qws
+*.bak
+*.smsg
+*.txt
+*.old
