@@ -1,12 +1,6 @@
 -- =============================================================================
 -- top_level.vhd
 -- Computer Structure I - Examination 4 | Altera DE2-115
--- Autor: Equipo | Fecha: 2026
---
--- Cambios v2:
---   - HEX3:HEX2 muestra make code (tecla presionada)
---   - HEX1:HEX0 muestra break code (tecla soltada)
---   - LCD muestra "Picture" o "Black" segun estado
 -- =============================================================================
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
@@ -27,6 +21,7 @@ entity top_level is
         VGA_SYNC_N  : out std_logic;
         PS2_CLK     : in  std_logic;
         PS2_DAT     : in  std_logic;
+        LCD_ON      : out std_logic;
         LCD_EN      : out std_logic;
         LCD_RS      : out std_logic;
         LCD_RW      : out std_logic;
@@ -44,9 +39,6 @@ end top_level;
 
 architecture Behavioral of top_level is
 
-    -- =========================================================================
-    -- Componentes
-    -- =========================================================================
     component pll_pixel_clk is
         port (
             areset : in  std_logic;
@@ -73,14 +65,33 @@ architecture Behavioral of top_level is
 
     component ps2_keyboard is
         Port (
-            clk         : in  std_logic;
-            reset       : in  std_logic;
-            ps2_clk     : in  std_logic;
-            ps2_data    : in  std_logic;
-            scan_code   : out std_logic_vector(7 downto 0);
-            scan_ready  : out std_logic;
-            key_pressed : out std_logic;
-            key_valid   : out std_logic
+            clk            : in  std_logic;
+            reset          : in  std_logic;
+            ps2_clk        : in  std_logic;
+            ps2_data       : in  std_logic;
+            scan_code      : out std_logic_vector(7 downto 0);
+            scan_ready     : out std_logic;
+            key_pressed    : out std_logic;
+            key_valid      : out std_logic;
+            make_code      : out std_logic_vector(7 downto 0);
+            break_code     : out std_logic_vector(7 downto 0);
+            make_extended  : out std_logic;
+            break_extended : out std_logic;
+            make_event     : out std_logic;
+            break_event    : out std_logic
+        );
+    end component;
+
+    component lcd_controller is
+        Port (
+            clk      : in  std_logic;
+            reset    : in  std_logic;
+            line1    : in  std_logic_vector(127 downto 0);
+            line2    : in  std_logic_vector(127 downto 0);
+            lcd_en   : out std_logic;
+            lcd_rs   : out std_logic;
+            lcd_rw   : out std_logic;
+            lcd_data : out std_logic_vector(7 downto 4)
         );
     end component;
 
@@ -102,108 +113,58 @@ architecture Behavioral of top_level is
         );
     end component;
 
-    -- =========================================================================
-    -- LCD controller embebido directamente (mas simple y robusto)
-    -- =========================================================================
-    -- Se implementa como proceso en este mismo archivo
-    -- para evitar problemas de timing en la inicializacion
-
-    -- =========================================================================
-    -- Senales
-    -- =========================================================================
-    signal reset      : std_logic;
-    signal clk_40     : std_logic;
-    signal clk_65     : std_logic;
-    signal pll_locked : std_logic;
-    signal clk_25     : std_logic := '0';
-    signal clk_pixel  : std_logic;
-    signal vga_mode   : std_logic_vector(1 downto 0);
-
-    signal h_active   : std_logic;
-    signal v_active   : std_logic;
-    signal pixel_x    : std_logic_vector(10 downto 0);
-    signal pixel_y    : std_logic_vector(10 downto 0);
-
-    signal img_red    : std_logic_vector(7 downto 0);
-    signal img_green  : std_logic_vector(7 downto 0);
-    signal img_blue   : std_logic_vector(7 downto 0);
-    signal out_red    : std_logic_vector(7 downto 0);
-    signal out_green  : std_logic_vector(7 downto 0);
-    signal out_blue   : std_logic_vector(7 downto 0);
-
-    signal scan_code   : std_logic_vector(7 downto 0) := (others => '0');
-    signal scan_ready  : std_logic;
-    signal key_pressed : std_logic;
-    signal key_valid   : std_logic;
-
-    -- Registros separados para make y break code
-    signal make_code  : std_logic_vector(7 downto 0) := (others => '0');
-    signal break_code : std_logic_vector(7 downto 0) := (others => '0');
-
     type display_state_t is (DISP_BLACK, DISP_PICTURE);
-    signal disp_state : display_state_t := DISP_BLACK;
+    type nibble_array_t is array (0 to 7) of std_logic_vector(3 downto 0);
+    type seg_array_t    is array (0 to 7) of std_logic_vector(6 downto 0);
 
     constant SC_P : std_logic_vector(7 downto 0) := x"4D";
     constant SC_B : std_logic_vector(7 downto 0) := x"32";
 
-    -- =========================================================================
-    -- LCD directo (sin componente separado)
-    -- =========================================================================
-    -- Estados de la maquina LCD
-    type lcd_state_t is (
-        LCD_POWER_UP,
-        LCD_INIT_1, LCD_INIT_2, LCD_INIT_3, LCD_INIT_4,
-        LCD_FUNC_SET, LCD_DISP_OFF, LCD_CLEAR, LCD_ENTRY, LCD_DISP_ON,
-        LCD_GOTO_L1, LCD_WRITE_L1,
-        LCD_GOTO_L2, LCD_WRITE_L2,
-        LCD_IDLE
-    );
-    signal lcd_state    : lcd_state_t := LCD_POWER_UP;
-    signal lcd_delay    : integer range 0 to 1_000_000 := 0;
-    signal lcd_char_idx : integer range 0 to 15 := 0;
-    signal lcd_nibble   : std_logic := '0';  -- 0=high nibble, 1=low nibble
-    signal lcd_en_sig   : std_logic := '0';
-    signal lcd_rs_sig   : std_logic := '0';
-    signal lcd_data_sig : std_logic_vector(7 downto 4) := (others => '0');
-    signal lcd_byte     : std_logic_vector(7 downto 0) := (others => '0');
-    signal lcd_en_cnt   : integer range 0 to 100 := 0;
-    signal lcd_en_phase : std_logic := '0';
-    signal lcd_refresh  : std_logic := '0';
+    constant BLANK_LINE    : std_logic_vector(127 downto 0) := x"20202020202020202020202020202020";
+    constant MSG_PICTURE   : std_logic_vector(127 downto 0) := x"50696374757265202020202020202020";
+    constant MSG_BLACK_LCD : std_logic_vector(127 downto 0) := x"426C61636B2020202020202020202020";
 
-    -- Mensajes LCD fijos (ASCII, 16 chars)
-    -- Linea 1: "  VGA DISPLAY   "
-    type char_array is array(0 to 15) of std_logic_vector(7 downto 0);
-    constant LINE1 : char_array := (
-        x"20", x"20", x"56", x"47", x"41", x"20",
-        x"44", x"49", x"53", x"50", x"4C", x"41",
-        x"59", x"20", x"20", x"20"
-    );
-    -- "Picture        "
-    constant MSG_PIC : char_array := (
-        x"50", x"69", x"63", x"74", x"75", x"72",
-        x"65", x"20", x"20", x"20", x"20", x"20",
-        x"20", x"20", x"20", x"20"
-    );
-    -- "Black          "
-    constant MSG_BLK : char_array := (
-        x"42", x"6C", x"61", x"63", x"6B", x"20",
-        x"20", x"20", x"20", x"20", x"20", x"20",
-        x"20", x"20", x"20", x"20"
-    );
+    signal reset          : std_logic;
+    signal clk_25         : std_logic := '0';
+    signal clk_40         : std_logic;
+    signal clk_65         : std_logic;
+    signal pll_locked     : std_logic;
+    signal clk_pixel      : std_logic;
+    signal vga_mode       : std_logic_vector(1 downto 0);
+    signal h_active       : std_logic;
+    signal v_active       : std_logic;
+    signal pixel_x        : std_logic_vector(10 downto 0);
+    signal pixel_y        : std_logic_vector(10 downto 0);
+    signal img_red        : std_logic_vector(7 downto 0);
+    signal img_green      : std_logic_vector(7 downto 0);
+    signal img_blue       : std_logic_vector(7 downto 0);
+    signal out_red        : std_logic_vector(7 downto 0);
+    signal out_green      : std_logic_vector(7 downto 0);
+    signal out_blue       : std_logic_vector(7 downto 0);
 
-    signal lcd_line2 : char_array := MSG_BLK;
-    signal disp_prev  : display_state_t := DISP_PICTURE; -- forzar primer refresh
+    signal scan_code      : std_logic_vector(7 downto 0) := (others => '0');
+    signal scan_ready     : std_logic;
+    signal key_pressed    : std_logic;
+    signal key_valid      : std_logic;
+    signal make_code      : std_logic_vector(7 downto 0) := (others => '0');
+    signal break_code     : std_logic_vector(7 downto 0) := (others => '0');
+    signal make_extended  : std_logic := '0';
+    signal break_extended : std_logic := '0';
+    signal make_event     : std_logic := '0';
+    signal break_event    : std_logic := '0';
+
+    signal lcd_line2      : std_logic_vector(127 downto 0) := BLANK_LINE;
+    signal disp_state     : display_state_t := DISP_BLACK;
+
+    signal hex_digit      : nibble_array_t := (others => (others => '0'));
+    signal hex_seg        : seg_array_t;
+    signal hex_blank      : std_logic_vector(7 downto 0) := (others => '1');
 
 begin
 
-    -- =========================================================================
-    -- Reset
-    -- =========================================================================
-    reset <= not KEY(0);
+    reset   <= not KEY(0);
+    LCD_ON  <= '1';
 
-    -- =========================================================================
-    -- 25 MHz divisor por 2
-    -- =========================================================================
     process(CLOCK_50, reset)
     begin
         if reset = '1' then
@@ -213,9 +174,6 @@ begin
         end if;
     end process;
 
-    -- =========================================================================
-    -- PLL
-    -- =========================================================================
     PLL_INST : pll_pixel_clk
         port map (
             areset => reset,
@@ -225,9 +183,6 @@ begin
             locked => pll_locked
         );
 
-    -- =========================================================================
-    -- Seleccion modo VGA
-    -- =========================================================================
     process(SW)
     begin
         if SW(2) = '1' then
@@ -248,9 +203,6 @@ begin
     VGA_CLK    <= clk_pixel;
     VGA_SYNC_N <= '0';
 
-    -- =========================================================================
-    -- VGA Controller
-    -- =========================================================================
     VGA_CTRL : vga_controller
         port map (
             clk_pixel => clk_pixel,
@@ -266,9 +218,6 @@ begin
 
     VGA_BLANK_N <= h_active and v_active;
 
-    -- =========================================================================
-    -- Image ROM
-    -- =========================================================================
     IMG_ROM : image_rom
         port map (
             clk     => clk_pixel,
@@ -279,9 +228,6 @@ begin
             blue    => img_blue
         );
 
-    -- =========================================================================
-    -- Mux VGA
-    -- =========================================================================
     process(h_active, v_active, disp_state, img_red, img_green, img_blue)
     begin
         if h_active = '1' and v_active = '1' then
@@ -305,360 +251,131 @@ begin
     VGA_G <= out_green & "00";
     VGA_B <= out_blue  & "00";
 
-    -- =========================================================================
-    -- PS/2 Keyboard
-    -- =========================================================================
     KB_CTRL : ps2_keyboard
         port map (
-            clk         => CLOCK_50,
-            reset       => reset,
-            ps2_clk     => PS2_CLK,
-            ps2_data    => PS2_DAT,
-            scan_code   => scan_code,
-            scan_ready  => scan_ready,
-            key_pressed => key_pressed,
-            key_valid   => key_valid
+            clk            => CLOCK_50,
+            reset          => reset,
+            ps2_clk        => PS2_CLK,
+            ps2_data       => PS2_DAT,
+            scan_code      => scan_code,
+            scan_ready     => scan_ready,
+            key_pressed    => key_pressed,
+            key_valid      => key_valid,
+            make_code      => make_code,
+            break_code     => break_code,
+            make_extended  => make_extended,
+            break_extended => break_extended,
+            make_event     => make_event,
+            break_event    => break_event
         );
 
-    -- =========================================================================
-    -- Manejador de teclas
-    -- Separa make codes y break codes en registros distintos
-    -- =========================================================================
     process(CLOCK_50, reset)
+        variable next_digit : nibble_array_t;
+        variable next_blank : std_logic_vector(7 downto 0);
     begin
         if reset = '1' then
             disp_state <= DISP_BLACK;
-            make_code  <= (others => '0');
-            break_code <= (others => '0');
-            lcd_line2  <= MSG_BLK;
+            lcd_line2  <= BLANK_LINE;
+            hex_digit  <= (others => (others => '0'));
+            hex_blank  <= (others => '1');
         elsif rising_edge(CLOCK_50) then
-            if key_valid = '1' then
-                if key_pressed = '1' then
-                    -- Tecla presionada: guardar make code
-                    make_code <= scan_code;
-                    -- Cambiar display segun tecla
-                    if scan_code = SC_P then
-                        disp_state <= DISP_PICTURE;
-                        lcd_line2  <= MSG_PIC;
-                    elsif scan_code = SC_B then
-                        disp_state <= DISP_BLACK;
-                        lcd_line2  <= MSG_BLK;
-                    end if;
+            if make_event = '1' then
+                next_digit := (others => (others => '0'));
+                next_blank := (others => '1');
+
+                if make_extended = '1' then
+                    next_blank(7) := '0';
+                    next_blank(6) := '0';
+                    next_blank(5) := '0';
+                    next_blank(4) := '0';
+                    next_digit(7) := x"E";
+                    next_digit(6) := x"0";
+                    next_digit(5) := make_code(7 downto 4);
+                    next_digit(4) := make_code(3 downto 0);
+                    lcd_line2      <= BLANK_LINE;
                 else
-                    -- Tecla soltada: guardar break code
-                    break_code <= scan_code;
+                    next_blank(5) := '0';
+                    next_blank(4) := '0';
+                    next_digit(5) := make_code(7 downto 4);
+                    next_digit(4) := make_code(3 downto 0);
+
+                    if make_code = SC_P then
+                        disp_state <= DISP_PICTURE;
+                        lcd_line2  <= MSG_PICTURE;
+                    elsif make_code = SC_B then
+                        disp_state <= DISP_BLACK;
+                        lcd_line2  <= MSG_BLACK_LCD;
+                    else
+                        lcd_line2  <= BLANK_LINE;
+                    end if;
                 end if;
+
+                hex_digit <= next_digit;
+                hex_blank <= next_blank;
+
+            elsif break_event = '1' then
+                next_digit := (others => (others => '0'));
+                next_blank := (others => '1');
+
+                if break_extended = '1' then
+                    next_blank(5) := '0';
+                    next_blank(4) := '0';
+                    next_blank(3) := '0';
+                    next_blank(2) := '0';
+                    next_blank(1) := '0';
+                    next_blank(0) := '0';
+                    next_digit(5) := x"E";
+                    next_digit(4) := x"0";
+                    next_digit(3) := x"F";
+                    next_digit(2) := x"0";
+                    next_digit(1) := break_code(7 downto 4);
+                    next_digit(0) := break_code(3 downto 0);
+                else
+                    next_blank(3) := '0';
+                    next_blank(2) := '0';
+                    next_blank(1) := '0';
+                    next_blank(0) := '0';
+                    next_digit(3) := x"F";
+                    next_digit(2) := x"0";
+                    next_digit(1) := break_code(7 downto 4);
+                    next_digit(0) := break_code(3 downto 0);
+                end if;
+
+                hex_digit <= next_digit;
+                hex_blank <= next_blank;
+                lcd_line2 <= BLANK_LINE;
             end if;
         end if;
     end process;
 
-    -- =========================================================================
-    -- LCD Controller embebido (maquina de estados robusta)
-    -- Maneja: inicializacion + escritura de 2 lineas + refresco al cambiar
-    -- =========================================================================
-    process(CLOCK_50, reset)
-        variable en_cnt : integer range 0 to 2000 := 0;
+    LCD_CTRL : lcd_controller
+        port map (
+            clk      => CLOCK_50,
+            reset    => reset,
+            line1    => BLANK_LINE,
+            line2    => lcd_line2,
+            lcd_en   => LCD_EN,
+            lcd_rs   => LCD_RS,
+            lcd_rw   => LCD_RW,
+            lcd_data => LCD_DATA
+        );
+
+    SEG_GEN : for i in 0 to 7 generate
     begin
-        if reset = '1' then
-            lcd_state    <= LCD_POWER_UP;
-            lcd_delay    <= 0;
-            lcd_char_idx <= 0;
-            lcd_nibble   <= '0';
-            lcd_en_sig   <= '0';
-            lcd_rs_sig   <= '0';
-            lcd_data_sig <= (others => '0');
-            en_cnt       := 0;
-            lcd_refresh  <= '0';
-            disp_prev    <= DISP_PICTURE;
+        SEG_INST : seg7_decoder
+            port map (
+                hex_in  => hex_digit(i),
+                seg_out => hex_seg(i)
+            );
+    end generate;
 
-        elsif rising_edge(CLOCK_50) then
-
-            -- Detectar cambio de mensaje para forzar refresco
-            if disp_state /= disp_prev then
-                disp_prev   <= disp_state;
-                lcd_refresh <= '1';
-            end if;
-
-            case lcd_state is
-
-                -- Esperar 15 ms al encender (50MHz * 0.015s = 750000 ciclos)
-                when LCD_POWER_UP =>
-                    lcd_en_sig <= '0';
-                    if lcd_delay = 750000 then
-                        lcd_delay <= 0;
-                        lcd_state <= LCD_INIT_1;
-                    else
-                        lcd_delay <= lcd_delay + 1;
-                    end if;
-
-                -- Init secuencia 8-bit x3 (simplificada)
-                when LCD_INIT_1 =>
-                    lcd_rs_sig   <= '0';
-                    lcd_data_sig <= "0011";
-                    if en_cnt < 25 then
-                        lcd_en_sig <= '1';
-                        en_cnt := en_cnt + 1;
-                    elsif en_cnt < 250025 then
-                        lcd_en_sig <= '0';
-                        en_cnt := en_cnt + 1;
-                    else
-                        en_cnt := 0;
-                        lcd_state <= LCD_INIT_2;
-                    end if;
-
-                when LCD_INIT_2 =>
-                    lcd_rs_sig   <= '0';
-                    lcd_data_sig <= "0011";
-                    if en_cnt < 25 then
-                        lcd_en_sig <= '1';
-                        en_cnt := en_cnt + 1;
-                    elsif en_cnt < 10025 then
-                        lcd_en_sig <= '0';
-                        en_cnt := en_cnt + 1;
-                    else
-                        en_cnt := 0;
-                        lcd_state <= LCD_INIT_3;
-                    end if;
-
-                when LCD_INIT_3 =>
-                    lcd_rs_sig   <= '0';
-                    lcd_data_sig <= "0011";
-                    if en_cnt < 25 then
-                        lcd_en_sig <= '1';
-                        en_cnt := en_cnt + 1;
-                    elsif en_cnt < 2525 then
-                        lcd_en_sig <= '0';
-                        en_cnt := en_cnt + 1;
-                    else
-                        en_cnt := 0;
-                        lcd_state <= LCD_INIT_4;
-                    end if;
-
-                -- Cambiar a modo 4 bits
-                when LCD_INIT_4 =>
-                    lcd_rs_sig   <= '0';
-                    lcd_data_sig <= "0010";
-                    if en_cnt < 25 then
-                        lcd_en_sig <= '1';
-                        en_cnt := en_cnt + 1;
-                    elsif en_cnt < 2525 then
-                        lcd_en_sig <= '0';
-                        en_cnt := en_cnt + 1;
-                    else
-                        en_cnt    := 0;
-                        lcd_byte  <= x"28";  -- funcion: 4bit, 2 lineas
-                        lcd_nibble <= '0';
-                        lcd_state <= LCD_FUNC_SET;
-                    end if;
-
-                -- Funcion set: 0x28 (dos nibbles)
-                when LCD_FUNC_SET =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= lcd_byte(7 downto 4);
-                        if en_cnt < 25 then
-                            lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then
-                            lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '1';
-                        end if;
-                    else
-                        lcd_data_sig <= lcd_byte(3 downto 0);
-                        if en_cnt < 25 then
-                            lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then
-                            lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            lcd_byte  <= x"08";
-                            lcd_state <= LCD_DISP_OFF;
-                        end if;
-                    end if;
-
-                -- Display off: 0x08
-                when LCD_DISP_OFF =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"8";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '0'; lcd_state <= LCD_CLEAR; end if;
-                    end if;
-
-                -- Clear: 0x01
-                when LCD_CLEAR =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 100025 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"1";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 100025 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '0'; lcd_state <= LCD_ENTRY; end if;
-                    end if;
-
-                -- Entry mode: 0x06
-                when LCD_ENTRY =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"6";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '0'; lcd_state <= LCD_DISP_ON; end if;
-                    end if;
-
-                -- Display on: 0x0C
-                when LCD_DISP_ON =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"C";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            lcd_char_idx <= 0;
-                            lcd_state <= LCD_GOTO_L1;
-                        end if;
-                    end if;
-
-                -- Ir al inicio de linea 1: cmd 0x80
-                when LCD_GOTO_L1 =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"8";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            lcd_char_idx <= 0;
-                            lcd_state <= LCD_WRITE_L1;
-                        end if;
-                    end if;
-
-                -- Escribir 16 caracteres de linea 1
-                when LCD_WRITE_L1 =>
-                    lcd_rs_sig <= '1';
-                    lcd_byte <= LINE1(lcd_char_idx);
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= LINE1(lcd_char_idx)(7 downto 4);
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= LINE1(lcd_char_idx)(3 downto 0);
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            if lcd_char_idx = 15 then
-                                lcd_char_idx <= 0;
-                                lcd_state <= LCD_GOTO_L2;
-                            else
-                                lcd_char_idx <= lcd_char_idx + 1;
-                            end if;
-                        end if;
-                    end if;
-
-                -- Ir al inicio de linea 2: cmd 0xC0
-                when LCD_GOTO_L2 =>
-                    lcd_rs_sig <= '0';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= x"C";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= x"0";
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            lcd_char_idx <= 0;
-                            lcd_state <= LCD_WRITE_L2;
-                        end if;
-                    end if;
-
-                -- Escribir 16 caracteres de linea 2 (lcd_line2 es dinamico)
-                when LCD_WRITE_L2 =>
-                    lcd_rs_sig <= '1';
-                    if lcd_nibble = '0' then
-                        lcd_data_sig <= lcd_line2(lcd_char_idx)(7 downto 4);
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else en_cnt := 0; lcd_nibble <= '1'; end if;
-                    else
-                        lcd_data_sig <= lcd_line2(lcd_char_idx)(3 downto 0);
-                        if en_cnt < 25 then lcd_en_sig <= '1'; en_cnt := en_cnt + 1;
-                        elsif en_cnt < 2525 then lcd_en_sig <= '0'; en_cnt := en_cnt + 1;
-                        else
-                            en_cnt := 0; lcd_nibble <= '0';
-                            if lcd_char_idx = 15 then
-                                lcd_char_idx <= 0;
-                                lcd_refresh  <= '0';
-                                lcd_state    <= LCD_IDLE;
-                            else
-                                lcd_char_idx <= lcd_char_idx + 1;
-                            end if;
-                        end if;
-                    end if;
-
-                -- Esperar cambio de mensaje
-                when LCD_IDLE =>
-                    lcd_en_sig <= '0';
-                    if lcd_refresh = '1' then
-                        lcd_state <= LCD_GOTO_L2;
-                    end if;
-
-                when others =>
-                    lcd_state <= LCD_POWER_UP;
-
-            end case;
-        end if;
-    end process;
-
-    LCD_EN   <= lcd_en_sig;
-    LCD_RS   <= lcd_rs_sig;
-    LCD_RW   <= '0';
-    LCD_DATA <= lcd_data_sig;
-
-    -- =========================================================================
-    -- 7 segmentos:
-    --   HEX3:HEX2 -> make code  (ultima tecla presionada)
-    --   HEX1:HEX0 -> break code (ultima tecla soltada)
-    --   HEX7-HEX4 -> apagados
-    -- =========================================================================
-    SEG_MAKE_HI : seg7_decoder port map (hex_in => make_code(7 downto 4),  seg_out => HEX3);
-    SEG_MAKE_LO : seg7_decoder port map (hex_in => make_code(3 downto 0),  seg_out => HEX2);
-    SEG_BRK_HI  : seg7_decoder port map (hex_in => break_code(7 downto 4), seg_out => HEX1);
-    SEG_BRK_LO  : seg7_decoder port map (hex_in => break_code(3 downto 0), seg_out => HEX0);
-
-    HEX4 <= "1111111";
-    HEX5 <= "1111111";
-    HEX6 <= "1111111";
-    HEX7 <= "1111111";
+    HEX0 <= "1111111" when hex_blank(0) = '1' else hex_seg(0);
+    HEX1 <= "1111111" when hex_blank(1) = '1' else hex_seg(1);
+    HEX2 <= "1111111" when hex_blank(2) = '1' else hex_seg(2);
+    HEX3 <= "1111111" when hex_blank(3) = '1' else hex_seg(3);
+    HEX4 <= "1111111" when hex_blank(4) = '1' else hex_seg(4);
+    HEX5 <= "1111111" when hex_blank(5) = '1' else hex_seg(5);
+    HEX6 <= "1111111" when hex_blank(6) = '1' else hex_seg(6);
+    HEX7 <= "1111111" when hex_blank(7) = '1' else hex_seg(7);
 
 end Behavioral;
