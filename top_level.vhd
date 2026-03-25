@@ -11,9 +11,9 @@ entity top_level is
         CLOCK_50    : in  std_logic;
         KEY         : in  std_logic_vector(3 downto 0);
         SW          : in  std_logic_vector(17 downto 0);
-        VGA_R       : out std_logic_vector(9 downto 0);
-        VGA_G       : out std_logic_vector(9 downto 0);
-        VGA_B       : out std_logic_vector(9 downto 0);
+        VGA_R       : out std_logic_vector(7 downto 0);
+        VGA_G       : out std_logic_vector(7 downto 0);
+        VGA_B       : out std_logic_vector(7 downto 0);
         VGA_HS      : out std_logic;
         VGA_VS      : out std_logic;
         VGA_CLK     : out std_logic;
@@ -162,8 +162,8 @@ architecture Behavioral of top_level is
 
 begin
 
-    reset   <= not KEY(0);
-    LCD_ON  <= '1';
+    reset  <= not KEY(0);
+    LCD_ON <= '1';
 
     process(CLOCK_50, reset)
     begin
@@ -247,9 +247,9 @@ begin
         end if;
     end process;
 
-    VGA_R <= out_red   & "00";
-    VGA_G <= out_green & "00";
-    VGA_B <= out_blue  & "00";
+    VGA_R <= out_red;
+    VGA_G <= out_green;
+    VGA_B <= out_blue;
 
     KB_CTRL : ps2_keyboard
         port map (
@@ -343,7 +343,6 @@ begin
 
                 hex_digit <= next_digit;
                 hex_blank <= next_blank;
-                lcd_line2 <= BLANK_LINE;
             end if;
         end if;
     end process;
